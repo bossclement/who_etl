@@ -6,7 +6,7 @@ Built as a take-home exercise (~3h scope): clarity and integration thinking over
 
 ## Data model
 
-**Source:** `WHOSIS_000001` — life expectancy at birth (years), by country and year.
+**Source:** `WHOSIS_000001` — life expectancy at birth (years), by country, year, and sex disaggregation.
 
 **Target table:** `health_metrics`
 
@@ -14,12 +14,21 @@ Built as a take-home exercise (~3h scope): clarity and integration thinking over
 |----------------|--------------------------------------|
 | `country_code` | ISO-style spatial dimension (`SpatialDim`) |
 | `indicator`    | WHO indicator code                   |
-| `year`         | Reference year                       |
-| `value`        | Numeric metric                       |
+| `year`         | Reference year (`TimeDim`)           |
+| `sex`          | Sex disaggregation — mapped from API `Dim1` (e.g. `SEX_MLE`, `SEX_FMLE`, `SEX_BTSX`) |
+| `value`        | Numeric metric (`NumericValue`)      |
 
-**Natural key:** `(country_code, indicator, year)` — enforced with a unique constraint and used for idempotent upserts.
+**API → internal field mapping:** `SpatialDim` → `country_code`, `TimeDim` → `year`, `IndicatorCode` → `indicator`, **`Dim1` → `sex`**, `NumericValue` → `value`. The API name `Dim1` is generic; for `WHOSIS_000001` it means sex, so our schema uses `sex`.
 
-This shape supports simple analytical queries (trends by country, cross-country comparison for a given year, etc.).
+**Natural key:** `(country_code, indicator, year, sex)` — enforced with a unique constraint and used for idempotent upserts.
+
+### Why `sex` is part of the key
+
+A sample of 300 rows from the live API showed three `Dim1` values (`SEX_MLE`, `SEX_FMLE`, `SEX_BTSX`) and **8 country/year combinations with more than one sex** (e.g. Denmark 2020 had both male and female rows). The original key `(country_code, indicator, year)` caused in-batch deduplication to keep only one row and **drop the others**.
+
+`sex` is included in the schema, transform, unique constraint, and upsert so each disaggregation is stored separately. In-batch dedupe still applies only to **exact** duplicate keys (same country, indicator, year, and `sex`).
+
+This shape supports analysis by country/year and comparisons across sex without silent data loss.
 
 ## Architecture
 
@@ -38,7 +47,7 @@ migrations/     → Alembic schema (`health_metrics`)
 - **Batch pagination** (`$skip` / `$top`) keeps memory bounded and makes resume straightforward.
 - **Checkpoint after successful load** — if extract or load fails, `skip` is not advanced, so the pipeline can resume without duplicating loaded rows (upserts are still idempotent as a safety net).
 - **Upsert on load** — re-runs update existing rows instead of failing on duplicates.
-- **In-batch deduplication** — the API can return duplicate natural keys within one page; PostgreSQL rejects those in a single `INSERT … ON CONFLICT` without deduping first.
+- **In-batch deduplication** — the API can return exact duplicate natural keys within one page (same country, indicator, year, and `sex`); PostgreSQL rejects those in a single `INSERT … ON CONFLICT` without deduping first.
 
 ## Setup
 
@@ -110,9 +119,9 @@ Progress is stored in `state.json` as `{"skip": N}`.
 
 | Case | Handling |
 |------|----------|
-| Missing country, year, or value | Record skipped, warning logged |
+| Missing country, year, sex (`Dim1` absent), or value | Record skipped, warning logged |
 | Invalid types / out-of-range year | Pydantic validation (`app/schemas.py`), record skipped |
-| Duplicate keys in one API page | Deduped in transform (latest value kept) |
+| Exact duplicate natural keys in one API page | Deduped in transform (latest value kept) |
 | HTTP / timeout / malformed JSON | `ETLExtractError`, checkpoint not advanced |
 | DB errors | Rollback, `ETLLoadError`, checkpoint not advanced |
 | Corrupt `state.json` | `ETLStateError` on startup |
@@ -135,10 +144,10 @@ pytest
 - Sample query:
 
   ```sql
-  SELECT country_code, year, value
+  SELECT country_code, year, sex, value
   FROM health_metrics
   WHERE country_code = 'USA'
-  ORDER BY year DESC
+  ORDER BY year DESC, sex
   LIMIT 10;
   ```
 
@@ -156,5 +165,6 @@ pytest
 
 - `WHOSIS_000001` is a stable, useful dataset for the exercise.
 - `SpatialDim` is an acceptable country identifier for analysis.
+- API `Dim1` values (`SEX_MLE`, `SEX_FMLE`, `SEX_BTSX`) are stored in column `sex` as returned by the API; multiple sex values per country/year are expected, not anomalies.
 - Full dataset size is manageable with paginated in-memory batches.
 - One writer process; `state.json` is sufficient for checkpointing (no distributed lock).

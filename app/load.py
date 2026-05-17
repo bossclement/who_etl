@@ -21,7 +21,7 @@ def load_batch(records: list) -> None:
 
         stmt = insert(HealthMetric).values(records)
         stmt = stmt.on_conflict_do_update(
-            index_elements=["country_code", "indicator", "year"],
+            index_elements=["country_code", "indicator", "year", "sex"],
             set_={"value": stmt.excluded.value},
         )
 

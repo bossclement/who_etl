@@ -15,9 +15,11 @@ def transform_record(record: dict) -> Optional[Dict[str, Any]]:
         country = record.get("SpatialDim")
         year = record.get("TimeDim")
         indicator = record.get("IndicatorCode")
+        # WHOSIS_000001: API field Dim1 → sex (e.g. SEX_MLE, SEX_FMLE, SEX_BTSX)
+        sex = record.get("Dim1")
         value = record.get("NumericValue")
 
-        if not country or not year or value is None:
+        if not country or not year or not sex or value is None:
             logger.warning("Skipping invalid record: %s", record)
             return None
 
@@ -25,6 +27,7 @@ def transform_record(record: dict) -> Optional[Dict[str, Any]]:
             country_code=str(country),
             indicator=str(indicator),
             year=int(year),
+            sex=str(sex),
             value=float(value),
         ).model_dump()
 
@@ -49,6 +52,7 @@ def transform_batch(records: List[dict]) -> List[dict]:
             transformed["country_code"],
             transformed["indicator"],
             transformed["year"],
+            transformed["sex"],
         )
         if key in deduped:
             duplicate_count += 1
