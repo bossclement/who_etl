@@ -34,7 +34,7 @@ This shape supports analysis by country/year and comparisons across sex without 
 
 ```
 run.py          → orchestration, checkpointing, exit codes
-app/extract.py  → paginated HTTP calls to WHO OData API
+app/extract.py  → paginated HTTP calls to WHO OData API (retries on transient errors)
 app/transform.py→ field mapping, validation, in-batch deduplication
 app/load.py     → PostgreSQL upsert (ON CONFLICT DO UPDATE)
 app/state.py    → resume checkpoint (`state.json`)
@@ -45,6 +45,7 @@ migrations/     → Alembic schema (`health_metrics`)
 **Design choices**
 
 - **Batch pagination** (`$skip` / `$top`) keeps memory bounded and makes resume straightforward.
+- **Fetch retries** — GET requests retry on timeouts, connection errors, and HTTP 429/5xx with exponential backoff (urllib3 via `requests`; default 3 retries, 1s backoff factor).
 - **Checkpoint after successful load** — if extract or load fails, `skip` is not advanced, so the pipeline can resume without duplicating loaded rows (upserts are still idempotent as a safety net).
 - **Upsert on load** — re-runs update existing rows instead of failing on duplicates.
 - **In-batch deduplication** — the API can return exact duplicate natural keys within one page (same country, indicator, year, and `sex`); PostgreSQL rejects those in a single `INSERT … ON CONFLICT` without deduping first.
@@ -95,6 +96,8 @@ migrations/     → Alembic schema (`health_metrics`)
 | `--api-url URL` | WHO OData endpoint (default: `WHOSIS_000001`) |
 | `--page-size N` | Records per batch / `$top` (default: 100) |
 | `--timeout SEC` | HTTP timeout (default: 30) |
+| `--max-retries N` | Retries per request on transient failures (default: 3) |
+| `--retry-backoff SEC` | Exponential backoff factor between retries (default: 1.0) |
 | `--skip N` | Start at this `$skip` offset (overrides `state.json` for this run) |
 | `--reset` | Clear checkpoint to `skip=0` before running |
 | `--max-batches N` | Stop after N batches (debugging) |
@@ -122,7 +125,8 @@ Progress is stored in `state.json` as `{"skip": N}`.
 | Missing country, year, sex (`Dim1` absent), or value | Record skipped, warning logged |
 | Invalid types / out-of-range year | Pydantic validation (`app/schemas.py`), record skipped |
 | Exact duplicate natural keys in one API page | Deduped in transform (latest value kept) |
-| HTTP / timeout / malformed JSON | `ETLExtractError`, checkpoint not advanced |
+| HTTP / timeout / connection errors | Retried up to `--max-retries`; then `ETLExtractError`, checkpoint not advanced |
+| Malformed JSON | `ETLExtractError` (not retried), checkpoint not advanced |
 | DB errors | Rollback, `ETLLoadError`, checkpoint not advanced |
 | Corrupt `state.json` | `ETLStateError` on startup |
 

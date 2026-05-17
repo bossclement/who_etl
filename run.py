@@ -35,10 +35,13 @@ def run_pipeline(config: ETLConfig) -> None:
         logger.info("Starting pipeline from the beginning")
 
     logger.info(
-        "Config: api_url=%s page_size=%s timeout=%ss max_batches=%s",
+        "Config: api_url=%s page_size=%s timeout=%ss max_retries=%s "
+        "retry_backoff=%s max_batches=%s",
         config.api_base_url,
         config.page_size,
         config.request_timeout_seconds,
+        config.fetch_max_retries,
+        config.fetch_backoff_factor,
         config.max_batches if config.max_batches is not None else "unlimited",
     )
 
@@ -53,6 +56,8 @@ def run_pipeline(config: ETLConfig) -> None:
                 config.page_size,
                 api_base_url=config.api_base_url,
                 request_timeout_seconds=config.request_timeout_seconds,
+                max_retries=config.fetch_max_retries,
+                retry_backoff_factor=config.fetch_backoff_factor,
             )
         except ETLExtractError:
             logger.exception("Extract step failed; checkpoint not advanced (skip=%s)", skip)
